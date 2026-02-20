@@ -1,8 +1,8 @@
 use bevy::prelude::*;
 
 pub fn spawn_missile(commands: &mut Commands, asset_server: &Res<AssetServer>) {
-    let missile_asset_handle = asset_server
-        .load(GltfAssetLabel::Scene(0).from_asset("models/russian_x555/russian_x555.gltf"));
+    let missile_asset_handle =
+        asset_server.load(GltfAssetLabel::Scene(0).from_asset("models/StormShadow.glb"));
 
     commands.spawn((
         SceneRoot(missile_asset_handle),

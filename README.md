@@ -3,11 +3,11 @@ physics is difficult
 
 ## Licensing
 - The source code of this project is licensed under the [Apache 2.0 License](LICENSE).
-- 3D Assets located in the `/assets` folder are licensed under [CC-BY-NC-4.0](http://creativecommons.org/licenses/by-nc/4.0/).
+- 3D Assets located in the `/assets` folder are licensed under various licenses as noted below.
 
 ### Asset Credits
-- **"Russian X-555 air-launched cruise missile"** by [Dmitriy Mitroshin](https://sketchfab.com/LtxxwSibeRia), used under [CC-BY-NC-4.0](http://creativecommons.org/licenses/by-nc/4.0/). 
-  - Source: [Sketchfab](https://sketchfab.com/3d-models/russian-x-555-air-launched-cruise-missile-204c992ab27c4c1cad6a60b7c20b8c01)
+- **"Storm Shadow / SCALP-EG Low-poly"** by [FreshAlexei](https://www.cgtrader.com/freshalexei), used under [CGTrader Royalty Free License](https://help.cgtrader.com/hc/en-us/articles/360015124437-Royalty-Free-License). 
+  - Source: [CGTrader](https://www.cgtrader.com/free-3d-models/military/rocketry/storm-shadow-scalp-eg-low-poly)
 
 ## Compiling
 

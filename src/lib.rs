@@ -1,3 +1,5 @@
+use std::f32::consts::PI;
+
 #[cfg(not(target_arch = "wasm32"))]
 use bevy::anti_alias::taa::TemporalAntiAliasing;
 use bevy::{
@@ -12,6 +14,20 @@ pub mod missile;
 pub fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     spawn_missile(&mut commands, &asset_server);
 
+    commands.spawn((
+        DirectionalLight {
+            illuminance: light_consts::lux::FULL_DAYLIGHT,
+            shadows_enabled: true,
+            ..default()
+        },
+        Transform::from_rotation(Quat::from_xyzw(
+            -0.13334629,
+            -0.86597735,
+            -0.3586996,
+            0.3219264,
+        )),
+    ));
+
     let skybox_handle = asset_server.load("textures/skybox.ktx2");
     // camera
     commands.spawn((
@@ -25,12 +41,6 @@ pub fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         Skybox {
             image: skybox_handle.clone(),
             brightness: 1000.0,
-            ..default()
-        },
-        EnvironmentMapLight {
-            diffuse_map: skybox_handle.clone(),
-            specular_map: skybox_handle,
-            intensity: 2000.0,
             ..default()
         },
     ));

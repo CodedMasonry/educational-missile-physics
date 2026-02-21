@@ -1,12 +1,10 @@
 #[cfg(not(target_arch = "wasm32"))]
 use bevy::anti_alias::taa::TemporalAntiAliasing;
-use bevy::{
-    camera_controller::free_camera::FreeCamera, core_pipeline::Skybox,
-    pbr::ScreenSpaceAmbientOcclusion, prelude::*,
-};
+use bevy::{core_pipeline::Skybox, pbr::ScreenSpaceAmbientOcclusion, prelude::*};
 
 use crate::missile::spawn_missile;
 
+pub mod camera;
 pub mod missile;
 
 pub fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
@@ -34,8 +32,7 @@ pub fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         #[cfg(not(target_arch = "wasm32"))]
         TemporalAntiAliasing::default(),
         ScreenSpaceAmbientOcclusion::default(),
-        Transform::from_xyz(0.0, 0.0, 8.0).looking_at(Vec3::ZERO, Vec3::Y),
-        FreeCamera::default(),
+        Transform::from_xyz(5.0, 5.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
         Skybox {
             image: skybox_handle.clone(),
             brightness: 1000.0,

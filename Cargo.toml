@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 argh = "0.1.14"
-bevy = { version = "0.18.0", features = ["bevy_camera_controller", "dynamic_linking", "free_camera"] }
+bevy = { version = "0.18.0", features = ["bevy_camera_controller", "debug", "dynamic_linking", "free_camera"] }
 
 [profile.dev]
 opt-level = 1

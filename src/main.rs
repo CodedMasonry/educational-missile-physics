@@ -1,10 +1,14 @@
-use bevy::{camera_controller::free_camera::FreeCameraPlugin, prelude::*};
-use educational_missile_physics::setup;
+use bevy::prelude::*;
+use educational_missile_physics::{
+    camera::{CameraSettings, instructions, orbit},
+    setup,
+};
 
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
-        .add_plugins(FreeCameraPlugin)
-        .add_systems(Startup, setup)
+        .init_resource::<CameraSettings>()
+        .add_systems(Startup, (setup, instructions))
+        .add_systems(Update, orbit)
         .run();
 }

@@ -6,6 +6,6 @@ pub fn spawn_missile(commands: &mut Commands, asset_server: &Res<AssetServer>) {
 
     commands.spawn((
         SceneRoot(missile_asset_handle),
-        Transform::from_xyz(-2.0, 0.0, 0.0),
+        Transform::from_xyz(0.0, 0.0, 0.0),
     ));
 }

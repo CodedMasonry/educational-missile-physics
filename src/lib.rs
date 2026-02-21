@@ -1,5 +1,3 @@
-use std::f32::consts::PI;
-
 #[cfg(not(target_arch = "wasm32"))]
 use bevy::anti_alias::taa::TemporalAntiAliasing;
 use bevy::{

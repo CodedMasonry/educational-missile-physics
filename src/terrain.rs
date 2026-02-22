@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use crate::missile::Missile;
 
 const CHUNK_SIZE: f32 = 512.0;
-const CHUNK_SUBDIVISIONS: u32 = 512; // vertices per side
-const VIEW_DISTANCE: i32 = 3; // chunks in each direction
+const CHUNK_SUBDIVISIONS: u32 = 256; // vertices per side
+const VIEW_DISTANCE: i32 = 6; // chunks in each direction
 
 #[derive(Resource)]
 pub struct TerrainConfig {
@@ -22,7 +22,7 @@ pub struct TerrainConfig {
 impl Default for TerrainConfig {
     fn default() -> Self {
         Self {
-            noise: Perlin::new(9090),
+            noise: Perlin::new(2026),
             height_scale: 150.0,
             noise_scale: 0.0002,
         }

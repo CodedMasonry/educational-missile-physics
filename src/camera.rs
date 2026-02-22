@@ -1,14 +1,17 @@
 use std::{f32::consts::FRAC_PI_2, ops::Range};
 
-use bevy::{input::mouse::AccumulatedMouseMotion, prelude::*};
+use bevy::{
+    input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll},
+    prelude::*,
+};
 
 #[derive(Debug, Resource)]
 pub struct CameraSettings {
     pub orbit_distance: f32,
     pub pitch_speed: f32,
-    // Clamp pitch to this range
     pub pitch_range: Range<f32>,
     pub yaw_speed: f32,
+    pub zoom_speed: f32,
 }
 
 impl Default for CameraSettings {
@@ -19,23 +22,25 @@ impl Default for CameraSettings {
             // These values are completely arbitrary, chosen because they seem to produce
             // "sensible" results for this example. Adjust as required.
             orbit_distance: 100.0,
-            pitch_speed: 0.2,
+            pitch_speed: 0.25,
             pitch_range: -pitch_limit..pitch_limit,
-            yaw_speed: 0.2,
+            yaw_speed: 0.25,
+            zoom_speed: 10.0,
         }
     }
 }
 
 pub fn orbit(
     mut camera: Single<&mut Transform, With<Camera>>,
-    camera_settings: Res<CameraSettings>,
+    mut camera_settings: ResMut<CameraSettings>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     mouse_motion: Res<AccumulatedMouseMotion>,
+    mouse_scroll: Res<AccumulatedMouseScroll>,
     time: Res<Time>,
 ) {
     let delta = mouse_motion.delta;
 
-    // Only pitch & yaw when left clicking
+    // pitch & yaw when left clicking
     if mouse_buttons.pressed(MouseButton::Left) {
         // Factor in delta time for mouse button inputs.
         let delta_pitch = delta.y * camera_settings.pitch_speed * time.delta_secs();
@@ -52,6 +57,9 @@ pub fn orbit(
         let yaw = yaw + delta_yaw;
         camera.rotation = Quat::from_euler(EulerRot::YXZ, yaw, pitch, roll);
     }
+
+    // zoom with scroll wheel
+    camera_settings.orbit_distance -= mouse_scroll.delta.y * camera_settings.zoom_speed;
 
     // Adjust the translation to maintain the correct orientation toward the orbit target.
     // In our example it's a static target, but this could easily be customized.

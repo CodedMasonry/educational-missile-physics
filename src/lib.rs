@@ -4,6 +4,7 @@ use bevy::anti_alias::taa::TemporalAntiAliasing;
 use bevy::{core_pipeline::Skybox, pbr::ScreenSpaceAmbientOcclusion, prelude::*};
 
 pub mod camera;
+pub mod launchpad;
 pub mod missile;
 pub mod terrain;
 

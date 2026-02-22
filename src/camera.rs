@@ -8,7 +8,6 @@ pub struct CameraSettings {
     pub pitch_speed: f32,
     // Clamp pitch to this range
     pub pitch_range: Range<f32>,
-    pub roll_speed: f32,
     pub yaw_speed: f32,
 }
 
@@ -20,29 +19,11 @@ impl Default for CameraSettings {
             // These values are completely arbitrary, chosen because they seem to produce
             // "sensible" results for this example. Adjust as required.
             orbit_distance: 20.0,
-            pitch_speed: 0.003,
+            pitch_speed: 0.2,
             pitch_range: -pitch_limit..pitch_limit,
-            roll_speed: 1.0,
-            yaw_speed: 0.004,
+            yaw_speed: 0.2,
         }
     }
-}
-
-pub fn instructions(mut commands: Commands) {
-    commands.spawn((
-        Name::new("Instructions"),
-        Text::new(
-            "Mouse up or down: pitch\n\
-            Mouse left or right: yaw\n\
-            Mouse buttons: roll",
-        ),
-        Node {
-            position_type: PositionType::Absolute,
-            top: px(12),
-            left: px(12),
-            ..default()
-        },
-    ));
 }
 
 pub fn orbit(
@@ -53,23 +34,14 @@ pub fn orbit(
     time: Res<Time>,
 ) {
     let delta = mouse_motion.delta;
-    let mut delta_roll = 0.0;
 
-    if mouse_buttons.pressed(MouseButton::Left) {
-        delta_roll -= 1.0;
+    // Only move when mouse input
+    if !mouse_buttons.pressed(MouseButton::Left) {
+        return;
     }
-    if mouse_buttons.pressed(MouseButton::Right) {
-        delta_roll += 1.0;
-    }
-
-    // Mouse motion is one of the few inputs that should not be multiplied by delta time,
-    // as we are already receiving the full movement since the last frame was rendered. Multiplying
-    // by delta time here would make the movement slower that it should be.
-    let delta_pitch = delta.y * camera_settings.pitch_speed;
-    let delta_yaw = delta.x * camera_settings.yaw_speed;
-
-    // Conversely, we DO need to factor in delta time for mouse button inputs.
-    delta_roll *= camera_settings.roll_speed * time.delta_secs();
+    // Factor in delta time for mouse button inputs.
+    let delta_pitch = delta.y * camera_settings.pitch_speed * time.delta_secs();
+    let delta_yaw = delta.x * camera_settings.yaw_speed * time.delta_secs();
 
     // Obtain the existing pitch, yaw, and roll values from the transform.
     let (yaw, pitch, roll) = camera.rotation.to_euler(EulerRot::YXZ);
@@ -79,7 +51,6 @@ pub fn orbit(
         camera_settings.pitch_range.start,
         camera_settings.pitch_range.end,
     );
-    let roll = roll + delta_roll;
     let yaw = yaw + delta_yaw;
     camera.rotation = Quat::from_euler(EulerRot::YXZ, yaw, pitch, roll);
 

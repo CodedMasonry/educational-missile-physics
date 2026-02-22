@@ -1,4 +1,4 @@
-use crate::{missile::spawn_missile, terrain::TerrainTextures};
+use crate::{launchpad::spawn_launchpad, missile::spawn_missile, terrain::TerrainTextures};
 #[cfg(not(target_arch = "wasm32"))]
 use bevy::anti_alias::taa::TemporalAntiAliasing;
 use bevy::{core_pipeline::Skybox, pbr::ScreenSpaceAmbientOcclusion, prelude::*};
@@ -8,11 +8,17 @@ pub mod launchpad;
 pub mod missile;
 pub mod terrain;
 
-pub fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
+pub fn setup(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    asset_server: Res<AssetServer>,
+) {
     let terrain_textures = TerrainTextures::load(&asset_server);
     commands.insert_resource(terrain_textures);
 
     // Objects
+    spawn_launchpad(&mut commands, &mut meshes, &mut materials, &asset_server);
     spawn_missile(&mut commands, &asset_server);
 
     // Light
@@ -39,7 +45,6 @@ pub fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         #[cfg(not(target_arch = "wasm32"))]
         TemporalAntiAliasing::default(),
         ScreenSpaceAmbientOcclusion::default(),
-        Transform::from_xyz(5.0, 205.0, 5.0).looking_at(Vec3::new(0.0, 200.0, 0.0), Vec3::Y),
         Skybox {
             image: skybox_handle.clone(),
             brightness: 1000.0,

@@ -5,6 +5,8 @@ use bevy::{
     prelude::*,
 };
 
+use crate::missile::Missile;
+
 #[derive(Debug, Resource)]
 pub struct CameraSettings {
     pub orbit_distance: f32,
@@ -31,7 +33,8 @@ impl Default for CameraSettings {
 }
 
 pub fn orbit(
-    mut camera: Single<&mut Transform, With<Camera>>,
+    mut camera: Single<&mut Transform, (With<Camera>, Without<Missile>)>,
+    missile: Single<&Transform, (With<Missile>, Without<Camera>)>,
     mut camera_settings: ResMut<CameraSettings>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     mouse_motion: Res<AccumulatedMouseMotion>,
@@ -63,6 +66,6 @@ pub fn orbit(
 
     // Adjust the translation to maintain the correct orientation toward the orbit target.
     // In our example it's a static target, but this could easily be customized.
-    let target = Vec3::ZERO;
+    let target = missile.translation;
     camera.translation = target - camera.forward() * camera_settings.orbit_distance;
 }

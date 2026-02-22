@@ -10,7 +10,7 @@ use crate::missile::Missile;
 
 const CHUNK_SIZE: f32 = 512.0;
 const CHUNK_SUBDIVISIONS: u32 = 256; // vertices per side
-const VIEW_DISTANCE: i32 = 6; // chunks in each direction
+const VIEW_DISTANCE: i32 = 3; // chunks in each direction
 
 #[derive(Resource)]
 pub struct TerrainConfig {
@@ -74,10 +74,12 @@ impl TerrainTextures {
         };
 
         Self {
-            color: asset_server.load_with_settings("textures/ground_color.png", color_sampler),
-            normal: asset_server.load_with_settings("textures/ground_normal.png", linear_sampler),
+            color: asset_server
+                .load_with_settings("textures/ground/ground_color.png", color_sampler),
+            normal: asset_server
+                .load_with_settings("textures/ground/ground_normal.png", linear_sampler),
             roughness: asset_server
-                .load_with_settings("textures/ground_roughness.png", linear_sampler),
+                .load_with_settings("textures/ground/ground_rough.png", linear_sampler),
         }
     }
 }

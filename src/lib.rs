@@ -8,6 +8,7 @@ use crate::entities::{
 
 pub mod entities;
 pub mod physics;
+pub mod plugins;
 
 pub fn setup(
     mut commands: Commands,

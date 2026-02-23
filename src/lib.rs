@@ -26,7 +26,7 @@ pub fn setup(
     commands.spawn((
         DirectionalLight {
             illuminance: light_consts::lux::FULL_DAYLIGHT,
-            shadows_enabled: true,
+            shadows_enabled: false,
             ..default()
         },
         Transform::from_rotation(Quat::from_xyzw(

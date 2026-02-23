@@ -1,3 +1,5 @@
+use std::f32::consts::PI;
+
 use bevy::prelude::*;
 
 #[derive(Component)]
@@ -8,7 +10,7 @@ pub fn spawn_missile(commands: &mut Commands, asset_server: &Res<AssetServer>) {
         asset_server.load(GltfAssetLabel::Scene(0).from_asset("models/Exocet_MM40.glb"));
     commands.spawn((
         SceneRoot(missile_asset_handle),
-        Transform::from_xyz(-1010.0, -128.0, -425.0),
+        Transform::from_xyz(-1010.0, -132.0, -425.0).with_rotation(Quat::from_rotation_x(PI / 2.0)),
         Missile,
     ));
 }

@@ -1,3 +1,3 @@
-/// Georeference Library
-///
-/// For this project `Earth-Centered, Earth-Fixed` is used.
+// Georeference Library
+//
+// For this project `Earth-Centered, Earth-Fixed` is used.

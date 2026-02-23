@@ -12,7 +12,9 @@ pub struct CameraSettings {
     pub orbit_distance: f32,
     pub pitch_speed: f32,
     pub pitch_range: Range<f32>,
+    pub pitch_invert: bool,
     pub yaw_speed: f32,
+    pub yaw_invert: bool,
     pub zoom_speed: f32,
 }
 
@@ -26,7 +28,9 @@ impl Default for CameraSettings {
             orbit_distance: 100.0,
             pitch_speed: 0.25,
             pitch_range: -pitch_limit..pitch_limit,
+            pitch_invert: false,
             yaw_speed: 0.25,
+            yaw_invert: false,
             zoom_speed: 10.0,
         }
     }
@@ -44,10 +48,24 @@ pub fn orbit(
     let delta = mouse_motion.delta;
 
     // pitch & yaw when left clicking
-    if mouse_buttons.pressed(MouseButton::Left) {
+    if mouse_buttons.pressed(MouseButton::Middle) {
         // Factor in delta time for mouse button inputs.
-        let delta_pitch = delta.y * camera_settings.pitch_speed * time.delta_secs();
-        let delta_yaw = delta.x * camera_settings.yaw_speed * time.delta_secs();
+        let delta_pitch = delta.y
+            * camera_settings.pitch_speed
+            * time.delta_secs()
+            * if camera_settings.pitch_invert {
+                1.0
+            } else {
+                -1.0
+            };
+        let delta_yaw = delta.x
+            * camera_settings.yaw_speed
+            * time.delta_secs()
+            * if camera_settings.yaw_invert {
+                1.0
+            } else {
+                -1.0
+            };
 
         // Obtain the existing pitch, yaw, and roll values from the transform.
         let (yaw, pitch, roll) = camera.rotation.to_euler(EulerRot::YXZ);

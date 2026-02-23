@@ -5,7 +5,7 @@ use bevy::{
     prelude::*,
 };
 
-use crate::missile::Missile;
+use crate::entities::missile::Missile;
 
 #[derive(Debug, Resource)]
 pub struct CameraSettings {

@@ -6,7 +6,7 @@ use bevy::{
 use noise::{NoiseFn, Perlin};
 use std::collections::HashMap;
 
-use crate::missile::Missile;
+use crate::entities::missile::Missile;
 
 const CHUNK_SIZE: f32 = 512.0;
 const CHUNK_SUBDIVISIONS: u32 = 256; // vertices per side

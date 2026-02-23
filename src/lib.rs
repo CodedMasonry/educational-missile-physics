@@ -1,12 +1,13 @@
-use crate::{launchpad::spawn_launchpad, missile::spawn_missile, terrain::TerrainTextures};
 #[cfg(not(target_arch = "wasm32"))]
 use bevy::anti_alias::taa::TemporalAntiAliasing;
 use bevy::{core_pipeline::Skybox, pbr::ScreenSpaceAmbientOcclusion, prelude::*};
 
-pub mod camera;
-pub mod launchpad;
-pub mod missile;
-pub mod terrain;
+use crate::entities::{
+    launchpad::spawn_launchpad, missile::spawn_missile, terrain::TerrainTextures,
+};
+
+pub mod entities;
+pub mod physics;
 
 pub fn setup(
     mut commands: Commands,

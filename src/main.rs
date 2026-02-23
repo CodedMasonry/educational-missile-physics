@@ -1,8 +1,8 @@
 use bevy::prelude::*;
 use educational_missile_physics::{
-    camera::{CameraSettings, orbit},
+    entities::camera::{CameraSettings, orbit},
+    entities::terrain::{LoadedChunks, TerrainConfig, update_terrain_chunks},
     setup,
-    terrain::{LoadedChunks, TerrainConfig, update_terrain_chunks},
 };
 
 fn main() {

@@ -4,12 +4,13 @@ use educational_missile_physics::{
         camera::{CameraSettings, orbit},
         terrain::{LoadedChunks, TerrainConfig, update_terrain_chunks},
     },
+    plugins::debug_axes::DebugAxesPlugin,
     setup,
 };
 
 fn main() {
     App::new()
-        .add_plugins((DefaultPlugins))
+        .add_plugins((DefaultPlugins, DebugAxesPlugin))
         .init_resource::<CameraSettings>()
         .init_resource::<TerrainConfig>()
         .init_resource::<LoadedChunks>()

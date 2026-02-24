@@ -1,10 +1,10 @@
-#[cfg(not(target_arch = "wasm32"))]
-use bevy::anti_alias::taa::TemporalAntiAliasing;
-use bevy::{core_pipeline::Skybox, pbr::ScreenSpaceAmbientOcclusion, prelude::*};
-
-use crate::entities::{
-    launchpad::spawn_launchpad, missile::spawn_missile, terrain::TerrainTextures,
+use bevy::{
+    anti_alias::fxaa::{Fxaa, Sensitivity},
+    core_pipeline::Skybox,
+    prelude::*,
 };
+
+use crate::entities::{launchpad::spawn_launchpad, missile::spawn_missile};
 
 pub mod entities;
 pub mod physics;
@@ -16,11 +16,8 @@ pub fn setup(
     mut materials: ResMut<Assets<StandardMaterial>>,
     asset_server: Res<AssetServer>,
 ) {
-    let terrain_textures = TerrainTextures::load(&asset_server);
-    commands.insert_resource(terrain_textures);
-
     // Objects
-    spawn_launchpad(&mut commands, &mut meshes, &mut materials, &asset_server);
+    spawn_launchpad(&mut commands, &mut meshes, &mut materials);
     spawn_missile(&mut commands, &asset_server);
 
     // Light
@@ -43,10 +40,11 @@ pub fn setup(
     // Camera
     commands.spawn((
         Camera3d::default(),
-        Msaa::Off,
-        #[cfg(not(target_arch = "wasm32"))]
-        TemporalAntiAliasing::default(),
-        ScreenSpaceAmbientOcclusion::default(),
+        Fxaa {
+            enabled: true,
+            edge_threshold: Sensitivity::High,
+            edge_threshold_min: Sensitivity::Medium,
+        },
         Skybox {
             image: skybox_handle.clone(),
             brightness: 1000.0,

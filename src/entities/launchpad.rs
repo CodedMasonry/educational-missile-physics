@@ -7,14 +7,12 @@ pub fn spawn_launchpad(
     commands: &mut Commands,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
-    asset_server: &Res<AssetServer>,
 ) {
     let material = materials.add(StandardMaterial {
-        base_color_texture: Some(asset_server.load("textures/launchpad/floor_diff.png")),
-        normal_map_texture: Some(asset_server.load("textures/launchpad/floor_normal.png")),
-        metallic_roughness_texture: Some(asset_server.load("textures/launchpad/floor_rough.png")),
-        occlusion_texture: Some(asset_server.load("textures/launchpad/floor_ao.png")),
-        flip_normal_map_y: false,
+        base_color: Color::srgb(0.25, 0.26, 0.27),
+        perceptual_roughness: 0.92,
+        metallic: 0.05,
+        reflectance: 0.2,
         ..default()
     });
 

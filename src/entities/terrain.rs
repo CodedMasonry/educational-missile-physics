@@ -39,7 +39,7 @@ const CONTOUR_SUBDIVISIONS: u32 = 64;
 const CONTOUR_LEVELS: u32 = 20;
 
 /// Chunks loaded in each cardinal direction around the viewer.
-const VIEW_DISTANCE: i32 = 3;
+const VIEW_DISTANCE: i32 = 6;
 
 /// Extra chunk margin kept alive beyond VIEW_DISTANCE before despawn.
 const DESPAWN_MARGIN: i32 = 1;
@@ -48,7 +48,13 @@ const DESPAWN_MARGIN: i32 = 1;
 
 #[derive(Resource)]
 pub struct TerrainConfig {
+    /// Primary shape noise.
     pub noise: Perlin,
+    /// Domain-warp noise — offsets sample coords to break grid symmetry
+    /// and produce meandering ridges/valleys instead of uniform blobs.
+    pub warp_noise: Perlin,
+    /// Detail noise — fine-scale surface roughness on top of the base shape.
+    pub detail_noise: Perlin,
     pub height_scale: f32,
     pub noise_scale: f32,
     /// Min/max height used to distribute CONTOUR_LEVELS evenly.
@@ -58,14 +64,18 @@ pub struct TerrainConfig {
 
 impl Default for TerrainConfig {
     fn default() -> Self {
-        let height_scale = 150.0_f32;
+        let height_scale = 120.0_f32;
+        // Ridged noise output range is roughly [0, 1] after abs+invert,
+        // combined octave sum ≈ [0, ~1.75]; valley carving subtracts a little.
+        // Empirical min/max — adjust if terrain clips.
         Self {
             noise: Perlin::new(2026),
+            warp_noise: Perlin::new(1337),
+            detail_noise: Perlin::new(9999),
             height_scale,
             noise_scale: 0.0002,
-            // Perlin FBM sum ≈ [-1.9375, 1.9375]; multiply by height_scale
-            height_min: -1.9375 * height_scale,
-            height_max: 1.9375 * height_scale,
+            height_min: -0.3 * height_scale,
+            height_max: 1.6 * height_scale,
         }
     }
 }
@@ -137,21 +147,75 @@ pub struct TerrainChunk {
 
 // ── noise helpers ────────────────────────────────────────────────────────────
 
+/// Ridged FBM octave — inverts the absolute value of Perlin noise so that
+/// high values become sharp ridges and low values become wide flat basins.
+/// This is the core of what makes terrain look eroded rather than blobby.
+#[inline]
+fn ridged(noise: &Perlin, x: f64, z: f64) -> f64 {
+    1.0 - noise.get([x, z]).abs()
+}
+
 pub fn sample_height(x: f32, z: f32, config: &TerrainConfig) -> f32 {
     let s = config.noise_scale as f64;
-    let h = config.noise.get([x as f64 * s, z as f64 * s])
-        + 0.5 * config.noise.get([x as f64 * s * 2.0, z as f64 * s * 2.0])
-        + 0.25 * config.noise.get([x as f64 * s * 4.0, z as f64 * s * 4.0])
-        + 0.125 * config.noise.get([x as f64 * s * 8.0, z as f64 * s * 8.0])
-        + 0.0625 * config.noise.get([x as f64 * s * 16.0, z as f64 * s * 16.0]);
-    h as f32 * config.height_scale
+    let xd = x as f64;
+    let zd = z as f64;
+
+    // ── Stage 1: domain warp ─────────────────────────────────────────────────
+    // Warp the sample coordinates using a low-frequency noise field.
+    // This breaks the radial symmetry of FBM and makes valleys meander
+    // naturally rather than sitting in perfectly circular basins.
+    let warp_strength = 400.0_f64; // world-unit displacement; tune to taste
+    let ws = s * 0.5; // warp at half the base frequency so it's large-scale
+    let wx = config.warp_noise.get([xd * ws, zd * ws]) * warp_strength
+        + config.warp_noise.get([xd * ws * 2.0, zd * ws * 2.0]) * warp_strength * 0.5;
+    let wz = config.warp_noise.get([xd * ws + 3.7, zd * ws + 1.3]) * warp_strength
+        + config
+            .warp_noise
+            .get([xd * ws * 2.0 + 3.7, zd * ws * 2.0 + 1.3])
+            * warp_strength
+            * 0.5;
+
+    let sx = xd * s + wx * s;
+    let sz = zd * s + wz * s;
+
+    // ── Stage 2: ridged FBM base shape ──────────────────────────────────────
+    // Ridged noise: valleys are wide and flat, ridges are sharp.
+    // Octave weights chosen so detail falls off quickly — keeps the
+    // large-scale shape dominant, which is how real terrain reads at distance.
+    let h0 = ridged(&config.noise, sx, sz); // 1.000  large hills
+    let h1 = ridged(&config.noise, sx * 2.0, sz * 2.0) * 0.50; // mid detail
+    let h2 = ridged(&config.noise, sx * 4.0, sz * 4.0) * 0.25; // small bumps
+    let h3 = ridged(&config.noise, sx * 8.0, sz * 8.0) * 0.13; // surface texture
+    // Multiply successive octaves together (common trick) so ridge features
+    // from coarser octaves sharpen the finer ones — prevents mush at peaks.
+    let ridge_base = h0 + h0 * h1 + h0 * h1 * h2 + h3;
+
+    // ── Stage 3: valley carving via gradient proxy ───────────────────────────
+    // Real erosion deepens basins where flow accumulates.  We approximate
+    // this cheaply: sample the gradient magnitude of the base shape.
+    // High gradient = steep slope = ridge.  Low gradient = flat = basin.
+    // We then subtract a "flow carving" term that is strongest in basins.
+    let eps = s * 2.0;
+    let dh_x = (config.noise.get([sx + eps, sz]) - config.noise.get([sx - eps, sz])) / (2.0 * eps);
+    let dh_z = (config.noise.get([sx, sz + eps]) - config.noise.get([sx, sz - eps])) / (2.0 * eps);
+    let gradient_mag = (dh_x * dh_x + dh_z * dh_z).sqrt() as f32;
+    // carving_depth: strongest where gradient is near zero (flat basin centres).
+    // Tuned so valleys sit ~15-30 units below surrounding terrain.
+    let carving_depth = (1.0 - gradient_mag.clamp(0.0, 1.0)).powf(2.0) * 0.25;
+
+    // ── Stage 4: fine detail ─────────────────────────────────────────────────
+    // High-frequency detail noise adds surface roughness that reads as rocks /
+    // ground texture at low altitude — completely invisible from high up.
+    let detail = config.detail_noise.get([xd * s * 12.0, zd * s * 12.0]) as f32 * 0.04;
+
+    let h = ridge_base as f32 - carving_depth + detail;
+    h * config.height_scale
 }
 
 // ── background chunk data ────────────────────────────────────────────────────
 
 /// Everything produced off-thread for one chunk.
 struct ChunkData {
-    #[allow(unused)]
     coord: (i32, i32),
     /// LineList contour mesh.
     contour_mesh: Mesh,
@@ -305,18 +369,54 @@ fn generate_chunk(coord: (i32, i32), config: &TerrainConfig) -> ChunkData {
     let mut fill_indices: Vec<u32> =
         Vec::with_capacity((FILL_SUBDIVISIONS * FILL_SUBDIVISIONS * 6) as usize);
 
+    // Fixed sun direction for hillshading — NW high angle, classic topo map style.
+    // Baked into vertex colours so it works at any camera angle, not view-dependent.
+    let sun = Vec3::new(-1.0, 2.0, -1.0).normalize();
+
     for zi in 0..fv {
         for xi in 0..fv {
             let h = sample_grid(xi, zi);
             fill_positions.push([xi as f32 * f_step, h, zi as f32 * f_step]);
 
-            // Height-tinted fill: dark olive at low elevations, darker grey-green
-            // at peaks. Keeps visual contrast against the bright contour lines.
+            // ── hillshade via finite-difference surface normal ───────────────
+            // Clamp neighbours to grid edge so border vertices don't go OOB.
+            let xl = if xi > 0 { sample_grid(xi - 1, zi) } else { h };
+            let xr = if xi < fv - 1 {
+                sample_grid(xi + 1, zi)
+            } else {
+                h
+            };
+            let zd = if zi > 0 { sample_grid(xi, zi - 1) } else { h };
+            let zu = if zi < fv - 1 {
+                sample_grid(xi, zi + 1)
+            } else {
+                h
+            };
+            // Central-difference normal: (-dh/dx, 2*step, -dh/dz) normalised.
+            let normal = Vec3::new(xl - xr, 2.0 * f_step, zd - zu).normalize();
+            // Lambert term — floor at 0.08 so shadowed faces stay readable.
+            let shade = normal.dot(sun).clamp(0.08, 1.0);
+
+            // ── height-based colour tint ─────────────────────────────────────
+            // Three stops tuned to contrast with the contour colour scheme:
+            //   low  (t≈0): dark blue-grey  — valley floor
+            //   mid  (t≈0.5): muted olive   — hillside
+            //   high (t≈1): pale stone      — ridge / peak
             let t = ((h - config.height_min) / h_range).clamp(0.0, 1.0);
+            let (base_r, base_g, base_b) = if t < 0.5 {
+                let s = t * 2.0;
+                (0.05 + s * 0.10, 0.12 + s * 0.10, 0.10 + s * 0.02)
+            } else {
+                let s = (t - 0.5) * 2.0;
+                (0.15 + s * 0.25, 0.22 + s * 0.18, 0.12 - s * 0.04)
+            };
+
+            // Multiply tint by hillshade — steep shadowed slopes go dark,
+            // lit slopes brighten. This is the primary low-angle depth cue.
             fill_colors.push([
-                0.04 + t * 0.06, // R
-                0.10 + t * 0.08, // G
-                0.04 + t * 0.02, // B
+                (base_r * shade).clamp(0.0, 1.0),
+                (base_g * shade).clamp(0.0, 1.0),
+                (base_b * shade).clamp(0.0, 1.0),
                 1.0,
             ]);
         }
@@ -393,6 +493,8 @@ pub fn update_terrain_chunks(
             // Clone only what the task needs (no Arc needed; Perlin is Copy).
             let cfg_clone = TerrainConfig {
                 noise: config.noise,
+                warp_noise: config.warp_noise,
+                detail_noise: config.detail_noise,
                 height_scale: config.height_scale,
                 noise_scale: config.noise_scale,
                 height_min: config.height_min,

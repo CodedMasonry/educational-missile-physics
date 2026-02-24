@@ -19,7 +19,7 @@ pub fn spawn_launchpad(
     commands.spawn((
         Mesh3d(meshes.add(Cuboid::new(100.0, 5.0, 100.0))),
         MeshMaterial3d(material),
-        Transform::from_xyz(-1010.0, -148.0, -425.0),
+        Transform::from_xyz(-1010.0, 70.0, -525.0),
         LaunchPad,
     ));
 }

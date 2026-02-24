@@ -216,6 +216,7 @@ pub fn sample_height(x: f32, z: f32, config: &TerrainConfig) -> f32 {
 
 /// Everything produced off-thread for one chunk.
 struct ChunkData {
+    #[allow(unused)]
     coord: (i32, i32),
     /// LineList contour mesh.
     contour_mesh: Mesh,

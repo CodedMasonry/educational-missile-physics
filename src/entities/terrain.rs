@@ -1,19 +1,4 @@
-// terrain.rs — optimized for ballistic missile simulation
-//
-// KEY CHANGES FROM ORIGINAL:
-//   1. TAA → disable at app level; use FXAA instead:
-//        app.insert_resource(Msaa::Off)
-//           .add_plugins(bevy::core_pipeline::experimental::taa::TemporalAntiAliasPlugin) // REMOVE THIS
-//        In your CameraBundle, replace TemporalAntiAliasBundle with:
-//           bevy_render::camera::TemporalJitter is gone; just add:
-//           bevy::pbr::ScreenSpaceAmbientOcclusionBundle  // optional
-//        Simplest fix: use FXAA on the camera component:
-//           Camera { hdr: true, .. }, Fxaa { enabled: true, .. }
-//
-//   2. Chunk mesh → contour lines (LineList topology, ~10x fewer verts)
-//   3. Async chunk generation via AsyncComputeTaskPool (no frame hitches)
-//   4. Collision uses a separate lightweight HeightCache (pure CPU data)
-//   5. Reduced VIEW_DISTANCE default; missile sim rarely needs wide terrain
+// terrain.rs — optimized for ballistic missile simulation with geographic referencing
 
 use bevy::{
     asset::RenderAssetUsages,
@@ -26,6 +11,7 @@ use noise::{NoiseFn, Perlin};
 use std::collections::HashMap;
 
 use crate::entities::missile::Missile;
+use crate::physics::georeference::{self, LLA};
 
 // ── tunables ────────────────────────────────────────────────────────────────
 
@@ -46,6 +32,35 @@ const DESPAWN_MARGIN: i32 = 1;
 
 // ── resources ───────────────────────────────────────────────────────────────
 
+/// Simulation origin — the LLA reference point for all terrain and coordinates.
+///
+/// All sim-space positions are relative to this geographic origin. Sim space is
+/// a Local Tangent Plane (LTP) with:
+///   - X axis pointing East
+///   - Y axis pointing Up
+///   - Z axis pointing -North
+///
+/// The georeference library converts LLA ↔ sim space via ECEF, so curvature is
+/// properly accounted for at any distance from the origin. Suitable for ballistic
+/// missile simulations across thousands of kilometers.
+#[derive(Resource)]
+pub struct SimulationOrigin {
+    /// Reference LLA point for terrain generation and coordinate conversion.
+    /// Typically set to a location near the center of operations.
+    /// Terrain, missiles, and all objects operate in sim space relative to this.
+    pub origin: LLA,
+}
+
+impl Default for SimulationOrigin {
+    fn default() -> Self {
+        // Default to Whiteman Air Force Base, Missouri, USA
+        // (40.8295° N, 93.3725° W, ~267m elevation)
+        Self {
+            origin: LLA::new(40.8295, -93.3725, 267.0),
+        }
+    }
+}
+
 #[derive(Resource)]
 pub struct TerrainConfig {
     /// Primary shape noise.
@@ -65,9 +80,6 @@ pub struct TerrainConfig {
 impl Default for TerrainConfig {
     fn default() -> Self {
         let height_scale = 120.0_f32;
-        // Ridged noise output range is roughly [0, 1] after abs+invert,
-        // combined octave sum ≈ [0, ~1.75]; valley carving subtracts a little.
-        // Empirical min/max — adjust if terrain clips.
         Self {
             noise: Perlin::new(2026),
             warp_noise: Perlin::new(1337),
@@ -82,7 +94,7 @@ impl Default for TerrainConfig {
 
 #[derive(Resource, Default)]
 pub struct LoadedChunks {
-    /// Spawned and fully rendered chunks.
+    /// Spawned and fully rendered chunks, keyed by sim-space chunk coordinate.
     pub chunks: HashMap<(i32, i32), Entity>,
     /// Chunks currently being generated on a background thread.
     pending: HashMap<(i32, i32), Task<ChunkData>>,
@@ -104,7 +116,7 @@ impl HeightCache {
         self.chunks.insert(coord, heights);
     }
 
-    /// Bilinearly interpolated world-space height at (wx, wz).
+    /// Bilinearly interpolated world-space height at (wx, wz) in simulation space.
     /// Returns None if the chunk isn't cached yet.
     pub fn sample(&self, wx: f32, wz: f32) -> Option<f32> {
         let cx = (wx / CHUNK_SIZE).floor() as i32;
@@ -149,23 +161,24 @@ pub struct TerrainChunk {
 
 /// Ridged FBM octave — inverts the absolute value of Perlin noise so that
 /// high values become sharp ridges and low values become wide flat basins.
-/// This is the core of what makes terrain look eroded rather than blobby.
 #[inline]
 fn ridged(noise: &Perlin, x: f64, z: f64) -> f64 {
     1.0 - noise.get([x, z]).abs()
 }
 
+/// Sample terrain height at a position in simulation space (Local Tangent Plane).
+///
+/// Coordinates (x, z) are in sim space, which is a flat Cartesian coordinate system
+/// relative to SimulationOrigin. This space is produced by georeference::lla_to_sim()
+/// and properly accounts for Earth's curvature via ECEF conversion.
 pub fn sample_height(x: f32, z: f32, config: &TerrainConfig) -> f32 {
     let s = config.noise_scale as f64;
     let xd = x as f64;
     let zd = z as f64;
 
     // ── Stage 1: domain warp ─────────────────────────────────────────────────
-    // Warp the sample coordinates using a low-frequency noise field.
-    // This breaks the radial symmetry of FBM and makes valleys meander
-    // naturally rather than sitting in perfectly circular basins.
-    let warp_strength = 400.0_f64; // world-unit displacement; tune to taste
-    let ws = s * 0.5; // warp at half the base frequency so it's large-scale
+    let warp_strength = 400.0_f64;
+    let ws = s * 0.5;
     let wx = config.warp_noise.get([xd * ws, zd * ws]) * warp_strength
         + config.warp_noise.get([xd * ws * 2.0, zd * ws * 2.0]) * warp_strength * 0.5;
     let wz = config.warp_noise.get([xd * ws + 3.7, zd * ws + 1.3]) * warp_strength
@@ -179,33 +192,20 @@ pub fn sample_height(x: f32, z: f32, config: &TerrainConfig) -> f32 {
     let sz = zd * s + wz * s;
 
     // ── Stage 2: ridged FBM base shape ──────────────────────────────────────
-    // Ridged noise: valleys are wide and flat, ridges are sharp.
-    // Octave weights chosen so detail falls off quickly — keeps the
-    // large-scale shape dominant, which is how real terrain reads at distance.
-    let h0 = ridged(&config.noise, sx, sz); // 1.000  large hills
-    let h1 = ridged(&config.noise, sx * 2.0, sz * 2.0) * 0.50; // mid detail
-    let h2 = ridged(&config.noise, sx * 4.0, sz * 4.0) * 0.25; // small bumps
-    let h3 = ridged(&config.noise, sx * 8.0, sz * 8.0) * 0.13; // surface texture
-    // Multiply successive octaves together (common trick) so ridge features
-    // from coarser octaves sharpen the finer ones — prevents mush at peaks.
+    let h0 = ridged(&config.noise, sx, sz);
+    let h1 = ridged(&config.noise, sx * 2.0, sz * 2.0) * 0.50;
+    let h2 = ridged(&config.noise, sx * 4.0, sz * 4.0) * 0.25;
+    let h3 = ridged(&config.noise, sx * 8.0, sz * 8.0) * 0.13;
     let ridge_base = h0 + h0 * h1 + h0 * h1 * h2 + h3;
 
     // ── Stage 3: valley carving via gradient proxy ───────────────────────────
-    // Real erosion deepens basins where flow accumulates.  We approximate
-    // this cheaply: sample the gradient magnitude of the base shape.
-    // High gradient = steep slope = ridge.  Low gradient = flat = basin.
-    // We then subtract a "flow carving" term that is strongest in basins.
     let eps = s * 2.0;
     let dh_x = (config.noise.get([sx + eps, sz]) - config.noise.get([sx - eps, sz])) / (2.0 * eps);
     let dh_z = (config.noise.get([sx, sz + eps]) - config.noise.get([sx, sz - eps])) / (2.0 * eps);
     let gradient_mag = (dh_x * dh_x + dh_z * dh_z).sqrt() as f32;
-    // carving_depth: strongest where gradient is near zero (flat basin centres).
-    // Tuned so valleys sit ~15-30 units below surrounding terrain.
     let carving_depth = (1.0 - gradient_mag.clamp(0.0, 1.0)).powf(2.0) * 0.25;
 
     // ── Stage 4: fine detail ─────────────────────────────────────────────────
-    // High-frequency detail noise adds surface roughness that reads as rocks /
-    // ground texture at low altitude — completely invisible from high up.
     let detail = config.detail_noise.get([xd * s * 12.0, zd * s * 12.0]) as f32 * 0.04;
 
     let h = ridge_base as f32 - carving_depth + detail;
@@ -226,12 +226,10 @@ struct ChunkData {
     heights: Vec<f32>,
 }
 
-/// Resolution of the solid fill mesh (vertices per side).
-/// Much coarser than contours — just enough to show broad elevation shape.
 const FILL_SUBDIVISIONS: u32 = 32;
 
 /// Generates contour-line mesh + solid fill mesh + collision cache for one chunk.
-/// Pure computation — no ECS access.
+/// Pure computation — no ECS access. Chunk coordinates are in sim space.
 fn generate_chunk(coord: (i32, i32), config: &TerrainConfig) -> ChunkData {
     let (chunk_x, chunk_z) = coord;
     let world_ox = chunk_x as f32 * CHUNK_SIZE;
@@ -303,32 +301,16 @@ fn generate_chunk(coord: (i32, i32), config: &TerrainConfig) -> ChunkData {
         }
     }
 
-    // Height-dependent contour colours — gives immediate visual depth cues:
-    //   low  (t≈0): deep blue-green  [0.0, 0.6, 0.4]
-    //   mid  (t≈0.5): yellow-green   [0.6, 0.9, 0.1]
-    //   high (t≈1): bright white-red [1.0, 0.8, 0.5]
-    // We stored world-Y in position[1], so we read it back here.
     let contour_colors: Vec<[f32; 4]> = contour_positions
         .iter()
         .map(|p| {
             let t = ((p[1] - config.height_min) / h_range).clamp(0.0, 1.0);
-            // Lerp through three colour stops.
             if t < 0.5 {
                 let s = t * 2.0;
-                [
-                    0.0 + s * 0.6,  // R
-                    0.6 + s * 0.3,  // G
-                    0.4 - s * 0.35, // B
-                    1.0,
-                ]
+                [0.0 + s * 0.6, 0.6 + s * 0.3, 0.4 - s * 0.35, 1.0]
             } else {
                 let s = (t - 0.5) * 2.0;
-                [
-                    0.6 + s * 0.4,   // R
-                    0.9 - s * 0.1,   // G
-                    0.05 + s * 0.45, // B
-                    1.0,
-                ]
+                [0.6 + s * 0.4, 0.9 - s * 0.1, 0.05 + s * 0.45, 1.0]
             }
         })
         .collect();
@@ -338,16 +320,10 @@ fn generate_chunk(coord: (i32, i32), config: &TerrainConfig) -> ChunkData {
     contour_mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, contour_colors);
 
     // ── solid fill mesh (low-poly triangle grid) ─────────────────────────────
-    // Uses FILL_SUBDIVISIONS (32) — coarser than contours, enough to match the
-    // broad terrain shape without being expensive. Unlit flat-shaded dark green
-    // sits behind the contour lines and gives the terrain a solid floor.
-    let fv = FILL_SUBDIVISIONS + 1; // vertices per side
+    let fv = FILL_SUBDIVISIONS + 1;
     let f_step = CHUNK_SIZE / FILL_SUBDIVISIONS as f32;
 
-    // Sample heights at fill resolution by bilinear interpolation from the
-    // contour grid — avoids redundant noise calls.
     let sample_grid = |xi: u32, zi: u32| -> f32 {
-        // Map fill vertex to contour grid float coords.
         let gx = xi as f32 * (CONTOUR_SUBDIVISIONS as f32 / FILL_SUBDIVISIONS as f32);
         let gz = zi as f32 * (CONTOUR_SUBDIVISIONS as f32 / FILL_SUBDIVISIONS as f32);
         let gxi = (gx.floor() as u32).min(CONTOUR_SUBDIVISIONS - 1);
@@ -370,8 +346,6 @@ fn generate_chunk(coord: (i32, i32), config: &TerrainConfig) -> ChunkData {
     let mut fill_indices: Vec<u32> =
         Vec::with_capacity((FILL_SUBDIVISIONS * FILL_SUBDIVISIONS * 6) as usize);
 
-    // Fixed sun direction for hillshading — NW high angle, classic topo map style.
-    // Baked into vertex colours so it works at any camera angle, not view-dependent.
     let sun = Vec3::new(-1.0, 2.0, -1.0).normalize();
 
     for zi in 0..fv {
@@ -379,8 +353,6 @@ fn generate_chunk(coord: (i32, i32), config: &TerrainConfig) -> ChunkData {
             let h = sample_grid(xi, zi);
             fill_positions.push([xi as f32 * f_step, h, zi as f32 * f_step]);
 
-            // ── hillshade via finite-difference surface normal ───────────────
-            // Clamp neighbours to grid edge so border vertices don't go OOB.
             let xl = if xi > 0 { sample_grid(xi - 1, zi) } else { h };
             let xr = if xi < fv - 1 {
                 sample_grid(xi + 1, zi)
@@ -393,16 +365,9 @@ fn generate_chunk(coord: (i32, i32), config: &TerrainConfig) -> ChunkData {
             } else {
                 h
             };
-            // Central-difference normal: (-dh/dx, 2*step, -dh/dz) normalised.
             let normal = Vec3::new(xl - xr, 2.0 * f_step, zd - zu).normalize();
-            // Lambert term — floor at 0.08 so shadowed faces stay readable.
             let shade = normal.dot(sun).clamp(0.08, 1.0);
 
-            // ── height-based colour tint ─────────────────────────────────────
-            // Three stops tuned to contrast with the contour colour scheme:
-            //   low  (t≈0): dark blue-grey  — valley floor
-            //   mid  (t≈0.5): muted olive   — hillside
-            //   high (t≈1): pale stone      — ridge / peak
             let t = ((h - config.height_min) / h_range).clamp(0.0, 1.0);
             let (base_r, base_g, base_b) = if t < 0.5 {
                 let s = t * 2.0;
@@ -412,8 +377,6 @@ fn generate_chunk(coord: (i32, i32), config: &TerrainConfig) -> ChunkData {
                 (0.15 + s * 0.25, 0.22 + s * 0.18, 0.12 - s * 0.04)
             };
 
-            // Multiply tint by hillshade — steep shadowed slopes go dark,
-            // lit slopes brighten. This is the primary low-angle depth cue.
             fill_colors.push([
                 (base_r * shade).clamp(0.0, 1.0),
                 (base_g * shade).clamp(0.0, 1.0),
@@ -442,7 +405,6 @@ fn generate_chunk(coord: (i32, i32), config: &TerrainConfig) -> ChunkData {
     fill_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, fill_positions);
     fill_mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, fill_colors);
     fill_mesh.insert_indices(Indices::U32(fill_indices));
-    // No normals — unlit material doesn't use them.
 
     // ── collision heightfield (coarser grid, CPU-only) ──────────────────────
     let cv = CACHE_VERTS;
@@ -476,8 +438,11 @@ pub fn update_terrain_chunks(
     config: Res<TerrainConfig>,
     viewer: Single<&Transform, With<Missile>>,
 ) {
-    let cx = (viewer.translation.x / CHUNK_SIZE).floor() as i32;
-    let cz = (viewer.translation.z / CHUNK_SIZE).floor() as i32;
+    // Viewer position is already in sim space (relative to origin).
+    let viewer_pos = viewer.translation;
+
+    let cx = (viewer_pos.x / CHUNK_SIZE).floor() as i32;
+    let cz = (viewer_pos.z / CHUNK_SIZE).floor() as i32;
 
     let task_pool = AsyncComputeTaskPool::get();
 
@@ -491,7 +456,6 @@ pub fn update_terrain_chunks(
                 continue;
             }
 
-            // Clone only what the task needs (no Arc needed; Perlin is Copy).
             let cfg_clone = TerrainConfig {
                 noise: config.noise,
                 warp_noise: config.warp_noise,
@@ -523,9 +487,6 @@ pub fn update_terrain_chunks(
         let world_x = coord.0 as f32 * CHUNK_SIZE;
         let world_z = coord.1 as f32 * CHUNK_SIZE;
 
-        // Unlit materials — no lighting cost, no PBR overdraw.
-        // vertex colours on the mesh are read automatically when ATTRIBUTE_COLOR
-        // is present; there is no `vertex_colors` field in StandardMaterial.
         let fill_mat = materials.add(StandardMaterial {
             base_color: Color::WHITE,
             unlit: true,
@@ -537,8 +498,6 @@ pub fn update_terrain_chunks(
             ..default()
         });
 
-        // Spawn fill mesh first so it renders behind the contour lines.
-        // The contour mesh is a child so they move together and despawn together.
         let entity = commands
             .spawn((
                 Mesh3d(meshes.add(data.fill_mesh)),
@@ -552,8 +511,6 @@ pub fn update_terrain_chunks(
                 parent.spawn((
                     Mesh3d(meshes.add(data.contour_mesh)),
                     MeshMaterial3d(contour_mat),
-                    // Offset contour lines 0.5 units up to prevent z-fighting
-                    // with the fill surface at the same elevation.
                     Transform::from_xyz(0.0, 0.5, 0.0),
                     NotShadowCaster,
                     NotShadowReceiver,
@@ -569,8 +526,6 @@ pub fn update_terrain_chunks(
     loaded_chunks.chunks.retain(|&(x, z), &mut entity| {
         let in_range = (x - cx).abs() <= limit && (z - cz).abs() <= limit;
         if !in_range {
-            // In Bevy 0.16+, despawn() automatically despawns children.
-            // despawn_recursive() was removed.
             commands.entity(entity).despawn();
             height_cache.chunks.remove(&(x, z));
         }
@@ -585,6 +540,10 @@ pub fn update_terrain_chunks(
 
 /// Call from your missile update system to check terrain impact.
 ///
+/// Position should be in simulation space (Local Tangent Plane relative to
+/// SimulationOrigin). Obtain sim space coordinates via georeference::lla_to_sim()
+/// if tracking missile position in LLA.
+///
 /// ```rust
 /// if let Some(ground_y) = terrain_height_at(missile_pos, &height_cache) {
 ///     if missile_pos.y <= ground_y {
@@ -596,6 +555,17 @@ pub fn terrain_height_at(pos: Vec3, cache: &HeightCache) -> Option<f32> {
     cache.sample(pos.x, pos.z)
 }
 
+/// Convenience function: get terrain height at a geographic location.
+/// Converts LLA to sim space, then queries the height cache.
+pub fn terrain_height_at_lla(
+    point: LLA,
+    origin: &SimulationOrigin,
+    cache: &HeightCache,
+) -> Option<f32> {
+    let sim_pos = georeference::lla_to_sim(point, origin.origin);
+    cache.sample(sim_pos.x as f32, sim_pos.z as f32)
+}
+
 // ── plugin ───────────────────────────────────────────────────────────────────
 
 pub struct TerrainPlugin;
@@ -603,6 +573,7 @@ pub struct TerrainPlugin;
 impl Plugin for TerrainPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<TerrainConfig>()
+            .init_resource::<SimulationOrigin>()
             .init_resource::<LoadedChunks>()
             .init_resource::<HeightCache>()
             .add_systems(Update, update_terrain_chunks);

@@ -74,7 +74,7 @@ pub fn ecef_delta_to_sim(delta: DVec3, origin: LLA) -> DVec3 {
     )
 }
 
-/// LLA → Sim position (relative to origin)
+/// LLA → Sim position (relative to origin, local tangent plane)
 pub fn lla_to_sim(point: LLA, origin: LLA) -> DVec3 {
     let delta = lla_to_ecef(point) - lla_to_ecef(origin);
     ecef_delta_to_sim(delta, origin)
@@ -124,7 +124,7 @@ pub fn ecef_to_lla(ecef: DVec3) -> LLA {
     LLA::new(lat.to_degrees(), long.to_degrees(), alt)
 }
 
-/// Sim position → LLA (relative to origin)
+/// Sim position (local tangent plane) → LLA (relative to origin)
 pub fn sim_to_lla(sim_pos: DVec3, origin: LLA) -> LLA {
     let delta_ecef = sim_to_ecef_delta(sim_pos, origin);
     let origin_ecef = lla_to_ecef(origin);

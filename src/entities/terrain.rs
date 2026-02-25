@@ -1,4 +1,4 @@
-// terrain.rs — optimized for ballistic missile simulation with geographic referencing
+// terrain.rs — curvature-aware LTP terrain generation
 
 use bevy::{
     asset::RenderAssetUsages,
@@ -13,68 +13,41 @@ use std::collections::HashMap;
 use crate::entities::missile::Missile;
 use crate::physics::georeference::{self, LLA};
 
-// ── tunables ────────────────────────────────────────────────────────────────
+// ── tunables ─────────────────────────────────────────────────────────────────
 
 const CHUNK_SIZE: f32 = 512.0;
-
-/// Vertices per side for contour line sampling.
-/// 64 gives smooth-enough contours; original 256 was for dense triangle fill.
 const CONTOUR_SUBDIVISIONS: u32 = 64;
-
-/// How many evenly-spaced height bands to draw contour lines at.
 const CONTOUR_LEVELS: u32 = 20;
-
-/// Chunks loaded in each cardinal direction around the viewer.
 const VIEW_DISTANCE: i32 = 6;
-
-/// Extra chunk margin kept alive beyond VIEW_DISTANCE before despawn.
 const DESPAWN_MARGIN: i32 = 1;
 
-// ── resources ───────────────────────────────────────────────────────────────
+// ── resources ─────────────────────────────────────────────────────────────────
 
-/// Simulation origin — the LLA reference point for all terrain and coordinates.
-///
-/// All sim-space positions are relative to this geographic origin. Sim space is
-/// a Local Tangent Plane (LTP) with:
-///   - X axis pointing East
-///   - Y axis pointing Up
-///   - Z axis pointing -North
-///
-/// The georeference library converts LLA ↔ sim space via ECEF, so curvature is
-/// properly accounted for at any distance from the origin. Suitable for ballistic
-/// missile simulations across thousands of kilometers.
 #[derive(Resource)]
 pub struct SimulationOrigin {
-    /// Reference LLA point for terrain generation and coordinate conversion.
-    /// Typically set to a location near the center of operations.
-    /// Terrain, missiles, and all objects operate in sim space relative to this.
     pub origin: LLA,
 }
 
 impl Default for SimulationOrigin {
     fn default() -> Self {
-        // Default to Whiteman Air Force Base, Missouri, USA
-        // (40.8295° N, 93.3725° W, ~267m elevation)
         Self {
-            origin: LLA::new(40.8295, -93.3725, 267.0),
+            origin: LLA::new(0.0, 0.0, 0.0),
         }
     }
 }
 
 #[derive(Resource)]
 pub struct TerrainConfig {
-    /// Primary shape noise.
     pub noise: Perlin,
-    /// Domain-warp noise — offsets sample coords to break grid symmetry
-    /// and produce meandering ridges/valleys instead of uniform blobs.
     pub warp_noise: Perlin,
-    /// Detail noise — fine-scale surface roughness on top of the base shape.
     pub detail_noise: Perlin,
     pub height_scale: f32,
     pub noise_scale: f32,
-    /// Min/max height used to distribute CONTOUR_LEVELS evenly.
     pub height_min: f32,
     pub height_max: f32,
+    /// Origin snapshot baked in at generation time so async tasks don't need
+    /// to access ECS resources.
+    pub origin: LLA,
 }
 
 impl Default for TerrainConfig {
@@ -88,27 +61,25 @@ impl Default for TerrainConfig {
             noise_scale: 0.0002,
             height_min: -0.3 * height_scale,
             height_max: 1.6 * height_scale,
+            origin: LLA::new(40.8295, -93.3725, 267.0),
         }
     }
 }
 
 #[derive(Resource, Default)]
 pub struct LoadedChunks {
-    /// Spawned and fully rendered chunks, keyed by sim-space chunk coordinate.
     pub chunks: HashMap<(i32, i32), Entity>,
-    /// Chunks currently being generated on a background thread.
     pending: HashMap<(i32, i32), Task<ChunkData>>,
 }
 
-/// Cheap CPU-side heightfield used for missile collision queries.
-/// Stored separately from the GPU mesh so we never read back from the GPU.
+/// CPU-side heightfield for missile collision queries.
+/// Heights are in sim-space Y (curvature-corrected + Perlin offset) and can be
+/// directly compared against a missile's `translation.y`.
 #[derive(Resource, Default)]
 pub struct HeightCache {
-    /// Maps chunk coord → flat array of heights, row-major, CACHE_VERTS × CACHE_VERTS.
     chunks: HashMap<(i32, i32), Vec<f32>>,
 }
 
-/// Resolution of the collision heightfield (independent of visual subdivisions).
 const CACHE_VERTS: u32 = 32;
 
 impl HeightCache {
@@ -116,8 +87,7 @@ impl HeightCache {
         self.chunks.insert(coord, heights);
     }
 
-    /// Bilinearly interpolated world-space height at (wx, wz) in simulation space.
-    /// Returns None if the chunk isn't cached yet.
+    /// Bilinearly interpolated sim-space Y at world position (wx, wz).
     pub fn sample(&self, wx: f32, wz: f32) -> Option<f32> {
         let cx = (wx / CHUNK_SIZE).floor() as i32;
         let cz = (wz / CHUNK_SIZE).floor() as i32;
@@ -150,33 +120,28 @@ impl HeightCache {
     }
 }
 
-// ── components ──────────────────────────────────────────────────────────────
+// ── components ────────────────────────────────────────────────────────────────
 
 #[derive(Component)]
 pub struct TerrainChunk {
     pub coord: (i32, i32),
 }
 
-// ── noise helpers ────────────────────────────────────────────────────────────
+// ── noise helpers ─────────────────────────────────────────────────────────────
 
-/// Ridged FBM octave — inverts the absolute value of Perlin noise so that
-/// high values become sharp ridges and low values become wide flat basins.
 #[inline]
 fn ridged(noise: &Perlin, x: f64, z: f64) -> f64 {
     1.0 - noise.get([x, z]).abs()
 }
 
-/// Sample terrain height at a position in simulation space (Local Tangent Plane).
-///
-/// Coordinates (x, z) are in sim space, which is a flat Cartesian coordinate system
-/// relative to SimulationOrigin. This space is produced by georeference::lla_to_sim()
-/// and properly accounts for Earth's curvature via ECEF conversion.
-pub fn sample_height(x: f32, z: f32, config: &TerrainConfig) -> f32 {
+/// Procedural height offset (meters) above the ellipsoid surface at sim-space (x, z).
+/// Does NOT include the curvature offset — add to `ellipsoid_surface_y` for the
+/// full sim-space Y.
+fn sample_perlin_height(x: f32, z: f32, config: &TerrainConfig) -> f32 {
     let s = config.noise_scale as f64;
     let xd = x as f64;
     let zd = z as f64;
 
-    // ── Stage 1: domain warp ─────────────────────────────────────────────────
     let warp_strength = 400.0_f64;
     let ws = s * 0.5;
     let wx = config.warp_noise.get([xd * ws, zd * ws]) * warp_strength
@@ -191,52 +156,69 @@ pub fn sample_height(x: f32, z: f32, config: &TerrainConfig) -> f32 {
     let sx = xd * s + wx * s;
     let sz = zd * s + wz * s;
 
-    // ── Stage 2: ridged FBM base shape ──────────────────────────────────────
     let h0 = ridged(&config.noise, sx, sz);
     let h1 = ridged(&config.noise, sx * 2.0, sz * 2.0) * 0.50;
     let h2 = ridged(&config.noise, sx * 4.0, sz * 4.0) * 0.25;
     let h3 = ridged(&config.noise, sx * 8.0, sz * 8.0) * 0.13;
     let ridge_base = h0 + h0 * h1 + h0 * h1 * h2 + h3;
 
-    // ── Stage 3: valley carving via gradient proxy ───────────────────────────
     let eps = s * 2.0;
     let dh_x = (config.noise.get([sx + eps, sz]) - config.noise.get([sx - eps, sz])) / (2.0 * eps);
     let dh_z = (config.noise.get([sx, sz + eps]) - config.noise.get([sx, sz - eps])) / (2.0 * eps);
     let gradient_mag = (dh_x * dh_x + dh_z * dh_z).sqrt() as f32;
     let carving_depth = (1.0 - gradient_mag.clamp(0.0, 1.0)).powf(2.0) * 0.25;
 
-    // ── Stage 4: fine detail ─────────────────────────────────────────────────
     let detail = config.detail_noise.get([xd * s * 12.0, zd * s * 12.0]) as f32 * 0.04;
 
     let h = ridge_base as f32 - carving_depth + detail;
     h * config.height_scale
 }
 
-// ── background chunk data ────────────────────────────────────────────────────
+/// Sim-space Y of the ellipsoid surface (altitude = 0) at (x, z).
+///
+/// The LTP tangent plane (Y = 0) is only tangent to the ellipsoid at the origin;
+/// everywhere else the ellipsoid curves below it. This function computes that dip
+/// by converting (x, 0, z) to LLA, forcing alt = 0, then converting back to sim.
+fn ellipsoid_surface_y(x: f32, z: f32, origin: LLA) -> f32 {
+    use bevy::math::DVec3;
 
-/// Everything produced off-thread for one chunk.
+    let sim_guess = DVec3::new(x as f64, 0.0, z as f64);
+    let lla_surface = georeference::sim_to_lla(sim_guess, origin);
+
+    let lla_on_ellipsoid = LLA::new(lla_surface.lat, lla_surface.long, 0.0);
+    let sim_on_ellipsoid = georeference::lla_to_sim(lla_on_ellipsoid, origin);
+
+    sim_on_ellipsoid.y as f32
+}
+
+/// Full sim-space height at (x, z): ellipsoid surface + procedural terrain.
+/// Use this value in HeightCache and for all collision tests.
+pub fn sample_height(x: f32, z: f32, config: &TerrainConfig) -> f32 {
+    let base_y = ellipsoid_surface_y(x, z, config.origin);
+    let perlin_offset = sample_perlin_height(x, z, config);
+    base_y + perlin_offset
+}
+
+// ── background chunk generation ───────────────────────────────────────────────
+
 struct ChunkData {
     #[allow(unused)]
     coord: (i32, i32),
-    /// LineList contour mesh.
     contour_mesh: Mesh,
-    /// Low-poly TriangleList fill mesh — gives terrain a solid floor.
     fill_mesh: Mesh,
-    /// Collision heightfield (CACHE_VERTS² floats).
+    /// Heights in sim-space Y (curvature-corrected + Perlin offset).
     heights: Vec<f32>,
 }
 
 const FILL_SUBDIVISIONS: u32 = 32;
 
-/// Generates contour-line mesh + solid fill mesh + collision cache for one chunk.
-/// Pure computation — no ECS access. Chunk coordinates are in sim space.
 fn generate_chunk(coord: (i32, i32), config: &TerrainConfig) -> ChunkData {
     let (chunk_x, chunk_z) = coord;
     let world_ox = chunk_x as f32 * CHUNK_SIZE;
     let world_oz = chunk_z as f32 * CHUNK_SIZE;
     let n = CONTOUR_SUBDIVISIONS + 1;
 
-    // ── sample the height grid (shared by contours + fill) ──────────────────
+    // Sample the full (curvature + Perlin) height grid.
     let mut grid = vec![0.0_f32; (n * n) as usize];
     for zi in 0..n {
         for xi in 0..n {
@@ -246,7 +228,7 @@ fn generate_chunk(coord: (i32, i32), config: &TerrainConfig) -> ChunkData {
         }
     }
 
-    // ── contour line extraction (marching-squares) ───────────────────────────
+    // ── contour lines (marching squares) ─────────────────────────────────────
     let mut contour_positions: Vec<[f32; 3]> = Vec::new();
     let h_range = config.height_max - config.height_min;
 
@@ -268,6 +250,9 @@ fn generate_chunk(coord: (i32, i32), config: &TerrainConfig) -> ChunkData {
                 let mut pts: [Option<[f32; 3]>; 4] = [None; 4];
                 let mut pt_count = 0;
 
+                // Vertex Y is the full sim-space height from grid[] so rendered
+                // contours match the collision cache. The chunk entity sits at
+                // Transform::from_xyz(world_x, 0, world_z), so XZ is chunk-local.
                 if (h00 - level).signum() != (h10 - level).signum() {
                     let t = (level - h00) / (h10 - h00);
                     pts[pt_count] = Some([lx + t * step, h00 + t * (h10 - h00), lz]);
@@ -301,10 +286,16 @@ fn generate_chunk(coord: (i32, i32), config: &TerrainConfig) -> ChunkData {
         }
     }
 
+    // Color by Perlin-only height (subtract curvature base) so the ramp is
+    // consistent across all chunks regardless of distance from the origin.
     let contour_colors: Vec<[f32; 4]> = contour_positions
         .iter()
         .map(|p| {
-            let t = ((p[1] - config.height_min) / h_range).clamp(0.0, 1.0);
+            let cx_approx = world_ox + p[0];
+            let cz_approx = world_oz + p[2];
+            let base_y = ellipsoid_surface_y(cx_approx, cz_approx, config.origin);
+            let perlin_h = p[1] - base_y;
+            let t = ((perlin_h - config.height_min) / h_range).clamp(0.0, 1.0);
             if t < 0.5 {
                 let s = t * 2.0;
                 [0.0 + s * 0.6, 0.6 + s * 0.3, 0.4 - s * 0.35, 1.0]
@@ -319,7 +310,7 @@ fn generate_chunk(coord: (i32, i32), config: &TerrainConfig) -> ChunkData {
     contour_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, contour_positions);
     contour_mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, contour_colors);
 
-    // ── solid fill mesh (low-poly triangle grid) ─────────────────────────────
+    // ── solid fill mesh ───────────────────────────────────────────────────────
     let fv = FILL_SUBDIVISIONS + 1;
     let f_step = CHUNK_SIZE / FILL_SUBDIVISIONS as f32;
 
@@ -368,7 +359,14 @@ fn generate_chunk(coord: (i32, i32), config: &TerrainConfig) -> ChunkData {
             let normal = Vec3::new(xl - xr, 2.0 * f_step, zd - zu).normalize();
             let shade = normal.dot(sun).clamp(0.08, 1.0);
 
-            let t = ((h - config.height_min) / h_range).clamp(0.0, 1.0);
+            // Color by Perlin offset so the ramp is consistent across chunks.
+            let base_y = ellipsoid_surface_y(
+                world_ox + xi as f32 * f_step,
+                world_oz + zi as f32 * f_step,
+                config.origin,
+            );
+            let perlin_h = h - base_y;
+            let t = ((perlin_h - config.height_min) / h_range).clamp(0.0, 1.0);
             let (base_r, base_g, base_b) = if t < 0.5 {
                 let s = t * 2.0;
                 (0.05 + s * 0.10, 0.12 + s * 0.10, 0.10 + s * 0.02)
@@ -406,7 +404,7 @@ fn generate_chunk(coord: (i32, i32), config: &TerrainConfig) -> ChunkData {
     fill_mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, fill_colors);
     fill_mesh.insert_indices(Indices::U32(fill_indices));
 
-    // ── collision heightfield (coarser grid, CPU-only) ──────────────────────
+    // ── collision heightfield ─────────────────────────────────────────────────
     let cv = CACHE_VERTS;
     let mut heights = Vec::with_capacity((cv * cv) as usize);
     for zi in 0..cv {
@@ -425,10 +423,8 @@ fn generate_chunk(coord: (i32, i32), config: &TerrainConfig) -> ChunkData {
     }
 }
 
-// ── main system ──────────────────────────────────────────────────────────────
+// ── main system ───────────────────────────────────────────────────────────────
 
-/// Kick off async generation for chunks entering view;
-/// poll completed tasks and spawn entities; despawn distant chunks.
 pub fn update_terrain_chunks(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -436,9 +432,9 @@ pub fn update_terrain_chunks(
     mut loaded_chunks: ResMut<LoadedChunks>,
     mut height_cache: ResMut<HeightCache>,
     config: Res<TerrainConfig>,
+    sim_origin: Res<SimulationOrigin>,
     viewer: Single<&Transform, With<Missile>>,
 ) {
-    // Viewer position is already in sim space (relative to origin).
     let viewer_pos = viewer.translation;
 
     let cx = (viewer_pos.x / CHUNK_SIZE).floor() as i32;
@@ -446,7 +442,6 @@ pub fn update_terrain_chunks(
 
     let task_pool = AsyncComputeTaskPool::get();
 
-    // ── enqueue missing chunks ───────────────────────────────────────────────
     for dz in -VIEW_DISTANCE..=VIEW_DISTANCE {
         for dx in -VIEW_DISTANCE..=VIEW_DISTANCE {
             let coord = (cx + dx, cz + dz);
@@ -464,15 +459,14 @@ pub fn update_terrain_chunks(
                 noise_scale: config.noise_scale,
                 height_min: config.height_min,
                 height_max: config.height_max,
+                origin: sim_origin.origin,
             };
 
             let task = task_pool.spawn(async move { generate_chunk(coord, &cfg_clone) });
-
             loaded_chunks.pending.insert(coord, task);
         }
     }
 
-    // ── poll completed tasks ─────────────────────────────────────────────────
     let mut ready = Vec::new();
     for (coord, task) in &mut loaded_chunks.pending {
         if let Some(data) = future::block_on(future::poll_once(task)) {
@@ -521,7 +515,6 @@ pub fn update_terrain_chunks(
         loaded_chunks.chunks.insert(coord, entity);
     }
 
-    // ── despawn distant chunks ───────────────────────────────────────────────
     let limit = VIEW_DISTANCE + DESPAWN_MARGIN;
     loaded_chunks.chunks.retain(|&(x, z), &mut entity| {
         let in_range = (x - cx).abs() <= limit && (z - cz).abs() <= limit;
@@ -536,27 +529,15 @@ pub fn update_terrain_chunks(
         .retain(|&(x, z), _| (x - cx).abs() <= limit && (z - cz).abs() <= limit);
 }
 
-// ── missile collision helper ─────────────────────────────────────────────────
+// ── collision helpers ─────────────────────────────────────────────────────────
 
-/// Call from your missile update system to check terrain impact.
-///
-/// Position should be in simulation space (Local Tangent Plane relative to
-/// SimulationOrigin). Obtain sim space coordinates via georeference::lla_to_sim()
-/// if tracking missile position in LLA.
-///
-/// ```rust
-/// if let Some(ground_y) = terrain_height_at(missile_pos, &height_cache) {
-///     if missile_pos.y <= ground_y {
-///         // impact!
-///     }
-/// }
-/// ```
+/// Returns the sim-space Y of the terrain surface below `pos`.
+/// Compare against `pos.y` to detect ground impact.
 pub fn terrain_height_at(pos: Vec3, cache: &HeightCache) -> Option<f32> {
     cache.sample(pos.x, pos.z)
 }
 
-/// Convenience function: get terrain height at a geographic location.
-/// Converts LLA to sim space, then queries the height cache.
+/// Returns the sim-space Y of the terrain surface at a geographic coordinate.
 pub fn terrain_height_at_lla(
     point: LLA,
     origin: &SimulationOrigin,
@@ -566,7 +547,7 @@ pub fn terrain_height_at_lla(
     cache.sample(sim_pos.x as f32, sim_pos.z as f32)
 }
 
-// ── plugin ───────────────────────────────────────────────────────────────────
+// ── plugin ────────────────────────────────────────────────────────────────────
 
 pub struct TerrainPlugin;
 

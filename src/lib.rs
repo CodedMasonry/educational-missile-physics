@@ -4,10 +4,7 @@ use bevy::{
     prelude::*,
 };
 
-use crate::{
-    entities::{launchpad::spawn_launchpad, missile::spawn_missile},
-    physics::georeference::{LLA, lla_to_sim},
-};
+use crate::entities::{launchpad::spawn_launchpad, missile::spawn_missile};
 
 pub mod entities;
 pub mod physics;

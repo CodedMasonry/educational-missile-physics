@@ -25,6 +25,10 @@ impl LLA {
     }
 }
 
+// -----------------------------------------------------------------------------
+// LLA → SIM functions
+// -----------------------------------------------------------------------------
+
 /// WGS-84 radius of curvature in the prime vertical
 ///
 /// a / sqrt(1 - e² · sin²(φ))
@@ -70,6 +74,16 @@ pub fn ecef_delta_to_sim(delta: DVec3, origin: LLA) -> DVec3 {
     )
 }
 
+/// LLA → Sim position (relative to origin)
+pub fn lla_to_sim(point: LLA, origin: LLA) -> DVec3 {
+    let delta = lla_to_ecef(point) - lla_to_ecef(origin);
+    ecef_delta_to_sim(delta, origin)
+}
+
+// -----------------------------------------------------------------------------
+// SIM → LLA functions
+// -----------------------------------------------------------------------------
+
 /// Simulation space → ECEF Δ
 pub fn sim_to_ecef_delta(sim_pos: DVec3, origin: LLA) -> DVec3 {
     let phi = origin.lat.to_radians();
@@ -92,7 +106,7 @@ pub fn ecef_to_lla(ecef: DVec3) -> LLA {
     let y = ecef.y;
     let z = ecef.z;
 
-    let lon = y.atan2(x);
+    let long = y.atan2(x);
     let p = (x.powi(2) + y.powi(2)).sqrt();
 
     // Initial guess for latitude
@@ -107,13 +121,7 @@ pub fn ecef_to_lla(ecef: DVec3) -> LLA {
         lat = z.atan2(p * (1.0 - ECCENTRICITY_SQUARED * (n / (n + alt))));
     }
 
-    LLA::new(lat.to_degrees(), lon.to_degrees(), alt)
-}
-
-/// LLA → Sim position (relative to origin)
-pub fn lla_to_sim(point: LLA, origin: LLA) -> DVec3 {
-    let delta = lla_to_ecef(point) - lla_to_ecef(origin);
-    ecef_delta_to_sim(delta, origin)
+    LLA::new(lat.to_degrees(), long.to_degrees(), alt)
 }
 
 /// Sim position → LLA (relative to origin)

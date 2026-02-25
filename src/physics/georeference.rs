@@ -70,8 +70,57 @@ pub fn ecef_delta_to_sim(delta: DVec3, origin: LLA) -> DVec3 {
     )
 }
 
-/// LLA → simulation space position (relative to origin)
+/// Simulation space → ECEF Δ
+pub fn sim_to_ecef_delta(sim_pos: DVec3, origin: LLA) -> DVec3 {
+    let phi = origin.lat.to_radians();
+    let lam = origin.long.to_radians();
+
+    let (sin_phi, cos_phi) = phi.sin_cos();
+    let (sin_lam, cos_lam) = lam.sin_cos();
+
+    // This is the transpose of the matrix used in ecef_delta_to_sim
+    DVec3::new(
+        -sin_lam * sim_pos.x + cos_phi * cos_lam * sim_pos.y + sin_phi * cos_lam * sim_pos.z,
+        cos_lam * sim_pos.x + cos_phi * sin_lam * sim_pos.y + sin_phi * sin_lam * sim_pos.z,
+        0.0 * sim_pos.x + sin_phi * sim_pos.y - cos_phi * sim_pos.z,
+    )
+}
+
+/// ECEF (meters) → LLA
+pub fn ecef_to_lla(ecef: DVec3) -> LLA {
+    let x = ecef.x;
+    let y = ecef.y;
+    let z = ecef.z;
+
+    let lon = y.atan2(x);
+    let p = (x.powi(2) + y.powi(2)).sqrt();
+
+    // Initial guess for latitude
+    let mut lat = z.atan2(p * (1.0 - ECCENTRICITY_SQUARED));
+    let mut alt = 0.0;
+    let mut n;
+
+    // Iterative refinement (usually converges in 3-5 iterations)
+    for _ in 0..5 {
+        n = prime_vertical_radius(lat);
+        alt = (p / lat.cos()) - n;
+        lat = z.atan2(p * (1.0 - ECCENTRICITY_SQUARED * (n / (n + alt))));
+    }
+
+    LLA::new(lat.to_degrees(), lon.to_degrees(), alt)
+}
+
+/// LLA → Sim position (relative to origin)
 pub fn lla_to_sim(point: LLA, origin: LLA) -> DVec3 {
     let delta = lla_to_ecef(point) - lla_to_ecef(origin);
     ecef_delta_to_sim(delta, origin)
+}
+
+/// Sim position → LLA (relative to origin)
+pub fn sim_to_lla(sim_pos: DVec3, origin: LLA) -> LLA {
+    let delta_ecef = sim_to_ecef_delta(sim_pos, origin);
+    let origin_ecef = lla_to_ecef(origin);
+    let point_ecef = origin_ecef + delta_ecef;
+
+    ecef_to_lla(point_ecef)
 }

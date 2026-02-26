@@ -18,7 +18,11 @@ use crate::physics::georeference::{self, LLA};
 const CHUNK_SIZE: f32 = 512.0;
 const CONTOUR_SUBDIVISIONS: u32 = 64;
 const CONTOUR_LEVELS: u32 = 20;
-const VIEW_DISTANCE: i32 = 6;
+
+/// Chunks loaded in each cardinal direction around the viewer.
+const VIEW_DISTANCE: i32 = 10;
+
+/// Extra chunk margin kept alive beyond VIEW_DISTANCE before despawn.
 const DESPAWN_MARGIN: i32 = 1;
 
 // ── resources ─────────────────────────────────────────────────────────────────

@@ -2,6 +2,8 @@ use std::f32::consts::PI;
 
 use bevy::prelude::*;
 
+use crate::Velocity;
+
 #[derive(Component)]
 pub struct Missile;
 
@@ -13,5 +15,10 @@ pub fn spawn_missile(commands: &mut Commands, asset_server: &Res<AssetServer>) {
         SceneRoot(missile_asset_handle),
         Transform::from_xyz(-1010.0, 87.0, -525.0).with_rotation(Quat::from_rotation_x(PI / 2.0)),
         Missile,
+        Velocity(Vec3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }),
     ));
 }

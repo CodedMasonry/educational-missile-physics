@@ -9,6 +9,7 @@ use crate::entities::{launchpad::spawn_launchpad, missile::spawn_missile};
 pub mod entities;
 pub mod physics;
 pub mod plugins;
+pub mod routines;
 
 pub fn setup(
     mut commands: Commands,
@@ -35,6 +36,7 @@ pub fn setup(
         )),
     ));
 
+    // Skybox
     let skybox_handle = asset_server.load("textures/skybox.ktx2");
 
     // Camera

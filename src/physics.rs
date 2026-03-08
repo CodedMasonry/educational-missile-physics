@@ -1,3 +1,5 @@
+// Core physics engine designed specifically for ballistics
+
 use bevy::math::Vec3;
 
 pub mod georeference;

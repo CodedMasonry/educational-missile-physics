@@ -1,8 +1,8 @@
 use bevy::prelude::*;
 use educational_missile_physics::{
     entities::{
-        camera::{CameraSettings, orbit},
-        terrain::{LoadedChunks, TerrainConfig, TerrainPlugin, update_terrain_chunks},
+        camera::{self, CameraSettings},
+        terrain::{self, LoadedChunks, TerrainConfig, TerrainPlugin},
     },
     plugins::debug_axes::DebugAxesPlugin,
     setup,
@@ -15,6 +15,6 @@ fn main() {
         .init_resource::<TerrainConfig>()
         .init_resource::<LoadedChunks>()
         .add_systems(Startup, setup)
-        .add_systems(Update, (orbit, update_terrain_chunks))
+        .add_systems(Update, (camera::orbit, terrain::update_terrain_chunks))
         .run();
 }

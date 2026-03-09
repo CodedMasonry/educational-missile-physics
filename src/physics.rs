@@ -43,13 +43,13 @@ pub fn update_physics(
     // Gravity pulls in +Y
     let gravity_force = Vec3::new(0.0, 9.81 * mass, 0.0);
 
-    // Thrust pushes in -Y, along missile facing
-    let thrust_dir = transform.rotation * Vec3::NEG_Y;
+    // Thrust Pushes towards the nose
+    let thrust_dir = transform.rotation * Vec3::Z;
     let thrust_force = thrust_dir * 100.0;
 
     // Drag opposes velocity direction
     let drag_magnitude = drag_force(altitude, velocity.0, drag_coefficient, cross_section_area);
-    let drag_force_vec = if velocity.0.length() > 0.1 {
+    let drag_force_vec = if velocity.0.length() > 0.0 {
         -velocity.0.normalize() * drag_magnitude
     } else {
         Vec3::ZERO
